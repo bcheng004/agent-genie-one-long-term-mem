@@ -1,0 +1,9 @@
+command:
+  - streamlit
+  - run
+  - app.py
+
+env:
+  # Databricks serving endpoint backing the agent, reached via the Unity Gateway.
+  - name: LLM_ENDPOINT_NAME
+    value: "databricks-gpt-6-astra"

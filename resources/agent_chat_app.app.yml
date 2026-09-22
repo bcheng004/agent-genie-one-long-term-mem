@@ -1,0 +1,23 @@
+resources:
+  apps:
+    agent_chat:
+      name: agent-chat-${bundle.target}
+      description: "Single-page Streamlit chat app over a LangChain agent on Databricks."
+      source_code_path: ../app
+      # The app authenticates as the logged-in user, so model calls are made
+      # under that user's grants rather than the app's service principal.
+      user_api_scopes:
+        - model-serving
+        - ai-gateway
+        # What the forwarded user token needs to reach the Genie One MCP server
+        # at /api/2.0/mcp/genie. The scope is `genie`, not `mcp.genie`: with only
+        # the latter the endpoint answers 403 "Provided OAuth token does not have
+        # required scopes: genie", and the agent falls back to running with no
+        # Genie tools.
+        - genie
+      resources:
+        - name: llm
+          description: "Serving endpoint backing the agent."
+          serving_endpoint:
+            name: ${var.llm_endpoint_name}
+            permission: CAN_QUERY
