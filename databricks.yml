@@ -8,6 +8,15 @@ variables:
   llm_endpoint_name:
     description: "Databricks serving endpoint backing the agent."
     default: "databricks-gpt-6-astra"
+  # The Lakebase project holding conversation checkpoints and long-term memory.
+  # These build the `postgres` resource paths; the app reads the same two names
+  # from app/app.yaml, so change both together.
+  lakebase_project:
+    description: "Lakebase Postgres Autoscaling project holding agent memory."
+    default: "agent-genie-memory"
+  lakebase_branch:
+    description: "Branch within the Lakebase project."
+    default: "production"
 
 # No workspace host/profile is pinned here on purpose — pass the profile you want
 # at deploy time so the target workspace is always an explicit choice:

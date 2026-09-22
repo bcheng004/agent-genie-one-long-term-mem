@@ -5,8 +5,8 @@ Databricks-hosted model through the Unity Gateway — no agent server, no
 FastAPI, no ResponsesAgent wrapper. Streamlit calls the compiled graph directly.
 
 Adapted from the ``agent-langgraph-advanced`` app template, reduced to just the
-agent construction: the template's agent_server (FastAPI + MLflow
-ResponsesAgent), Lakebase memory, and MCP wiring are all left out.
+agent: the template's agent_server (FastAPI + MLflow ResponsesAgent) is left out,
+while its Lakebase memory layer is kept — see ``memory``.
 """
 
 import logging
@@ -21,7 +21,9 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from mcp_client import genie_mcp_url, iter_coroutine, load_genie_tools
+import memory as mem
+from async_bridge import iter_coroutine
+from mcp_client import genie_mcp_url, load_genie_tools
 
 # Streamlit leaves the root logger at WARNING, which drops this module's INFO
 # lines — including which credentials the app ended up authenticating with.
@@ -38,7 +40,22 @@ may return before the answer is ready — when it reports an in-flight status, c
 `genie_poll_response` until the status is terminal, then use
 `genie_get_query_result` if you need the actual rows behind an answer. Pass the
 `conversation_id` from a previous Genie call when a question follows up on it, so
-Genie keeps its own context; omit it entirely when starting a new question."""
+Genie keeps its own context; omit it entirely when starting a new question.
+
+You have long-term memory across conversations, but only what you write with
+`save_user_memory` survives — acknowledging a fact in your reply does NOT store
+it, and the next conversation starts blank. So whenever the user states a durable
+fact or preference about themselves — their name, role or team, how they like
+answers formatted, the tables or metrics they care about, anything they'd expect
+you to know next time — you MUST call `save_user_memory` in that same turn,
+before you reply. Use a short descriptive key and a JSON-object value, e.g. key
+`preferred_units` with value `{"preferred_units": "metric"}`. Do this
+proactively, without being asked to remember, and don't announce it unless it's
+relevant. Skip one-off questions and anything they'd expect you to forget.
+
+Call `get_user_memory` at the start of a turn when your answer depends on
+something the user told you earlier. Use `delete_user_memory` when they correct
+or retract something you saved."""
 
 st.set_page_config(page_title="Agent Chat", page_icon="🤖", layout="wide")
 
@@ -99,6 +116,19 @@ def _workspace_client(token: str | None, host: str) -> WorkspaceClient:
     return WorkspaceClient()
 
 
+def _user_id(workspace_client: WorkspaceClient) -> str:
+    """Who the memories belong to.
+
+    The email is the stable key: it survives token rotation, and locally it
+    matches the profile's own user so a developer sees the memories they wrote.
+    """
+    try:
+        return workspace_client.current_user.me().user_name or "unknown"
+    except Exception:  # noqa: BLE001 — a shared bucket beats crashing
+        logger.warning("Could not resolve the current user.", exc_info=True)
+        return "unknown"
+
+
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
@@ -109,6 +139,8 @@ class Built(NamedTuple):
     genie_tools: list[str]
     mcp_url: str
     genie_error: str
+    memory: mem.Memory
+    user_id: str
 
 
 @st.cache_resource(show_spinner=False)
@@ -135,16 +167,29 @@ def build_agent(token: str | None, host: str, endpoint: str) -> Built:
     # Fetched under the signed-in user's credentials, so Genie answers from the
     # data that user can see.
     genie_tools, genie_error = load_genie_tools(workspace_client)
+
+    # Lakebase, by contrast, is reached with the app's own credentials: the
+    # memories are the app's storage, partitioned by user.
+    memory = mem.open_memory(mem.init_lakebase_config())
+    user_id = _user_id(workspace_client)
+    memory_tools = (
+        mem.memory_tools(memory.store, user_id) if memory.enabled else []
+    )
+
     agent = create_agent(
         model=model,
-        tools=[*LOCAL_TOOLS, *genie_tools],
+        tools=[*LOCAL_TOOLS, *genie_tools, *memory_tools],
         system_prompt=SYSTEM_PROMPT,
+        checkpointer=memory.checkpointer,
+        store=memory.store,
     )
     return Built(
         graph=agent,
         genie_tools=[t.name for t in genie_tools],
         mcp_url=genie_mcp_url(workspace_client),
         genie_error=genie_error,
+        memory=memory,
+        user_id=user_id,
     )
 
 
@@ -247,10 +292,11 @@ with st.sidebar:
     st.text_input("Model endpoint", value=LLM_ENDPOINT_NAME, disabled=True)
     st.caption("Served through the Unity Gateway (`use_ai_gateway`).")
 
-    # Builds the agent on first load, which is also the first Genie MCP call —
-    # so a broken endpoint or a missing `genie` scope shows up here rather than
-    # silently in the middle of someone's question.
-    with st.spinner("Connecting to Genie…"):
+    # Builds the agent on first load, which is also the first Genie MCP call and
+    # the first Lakebase connection — so a broken endpoint, a missing `genie`
+    # scope or an unreachable database shows up here rather than silently in the
+    # middle of someone's question.
+    with st.spinner("Connecting to Genie and Lakebase…"):
         try:
             built = get_agent()
             agent_error = None
@@ -273,19 +319,50 @@ with st.sidebar:
             )
             st.caption(f"Genie said: {built.genie_error}")
 
+        if built.memory.enabled:
+            st.caption(f"Long-term memory: Lakebase, as `{built.user_id}`")
+        else:
+            st.warning(
+                "Long-term memory unavailable — this conversation won't be "
+                "remembered after you close the tab."
+            )
+            if built.memory.error:
+                st.caption(f"Lakebase said: {built.memory.error}")
+
     if st.button("New conversation", width="stretch"):
+        # With a checkpointer the transcript lives in Postgres, so starting over
+        # means pointing at a new thread rather than clearing a local list. The
+        # pointer is stored too, so a reload doesn't resurrect the old thread.
+        if built is not None and built.memory.enabled:
+            st.session_state["thread_id"] = mem.start_new_thread(
+                built.memory, built.user_id
+            )
         st.session_state["history"] = []
         st.rerun()
 
-st.session_state.setdefault("history", [])
+if built is None:
+    st.stop()
 
-# Replay the transcript. History holds real LangChain messages, so a rerun
-# re-renders without calling the model again.
+# Where the transcript comes from. With memory the checkpointer is the source of
+# truth, keyed by a thread id that outlives the browser tab; without it the
+# transcript is whatever this session happens to be holding.
+if built.memory.enabled:
+    if "thread_id" not in st.session_state:
+        st.session_state["thread_id"] = mem.current_thread_id(
+            built.memory, built.user_id
+        )
+    run_config = {"configurable": {"thread_id": st.session_state["thread_id"]}}
+    history = mem.load_history(built.graph, run_config)
+else:
+    run_config = {}
+    history = st.session_state.setdefault("history", [])
+
+# Replay the transcript. It holds real LangChain messages, so a rerun re-renders
+# without calling the model again.
 #
 # One user question can produce several messages (a tool-calling AIMessage, the
 # ToolMessages, then the answering AIMessage). They are replayed as one
 # assistant bubble so the transcript matches what was rendered live.
-history = st.session_state["history"]
 index = 0
 while index < len(history):
     message = history[index]
@@ -311,7 +388,9 @@ while index < len(history):
     index = run_end
 
 if question := st.chat_input("Ask the agent…"):
-    st.session_state["history"].append(HumanMessage(question))
+    asked = HumanMessage(question)
+    if not built.memory.enabled:
+        history.append(asked)
     with st.chat_message("user"):
         st.markdown(question)
 
@@ -333,15 +412,21 @@ if question := st.chat_input("Ask the agent…"):
             as one is called. ``iter_coroutine`` bridges it back to the plain
             iterator ``st.write_stream`` wants.
             """
-            agent = get_agent().graph
-            # Read history here, on the script thread. The lambda below runs on
-            # iter_coroutine's worker thread, which has no Streamlit
-            # ScriptRunContext — touching st.session_state there raises
+            agent = built.graph
+            # With a checkpointer the graph already has the conversation, so the
+            # turn sends only the new question; resending the transcript would
+            # append it to the checkpoint a second time. Without one, the whole
+            # list has to go every turn because nothing else holds context.
+            #
+            # Either way this is read here, on the script thread: the lambda below
+            # runs on the shared event loop, which has no Streamlit
+            # ScriptRunContext, and touching st.session_state there raises
             # "st.session_state has no key".
-            messages = list(st.session_state["history"])
+            payload_messages = [asked] if built.memory.enabled else list(history)
             events = iter_coroutine(
                 lambda: agent.astream(
-                    {"messages": messages},
+                    {"messages": payload_messages},
+                    config=run_config,
                     stream_mode=["updates", "messages"],
                 )
             )
@@ -362,8 +447,11 @@ if question := st.chat_input("Ask the agent…"):
             logger.exception("Agent invocation failed")
             st.error(f"Agent request failed: {exc}")
             # Drop the unanswered question so the next turn isn't sent a
-            # trailing user message with no reply.
-            st.session_state["history"].pop()
+            # trailing user message with no reply. The checkpointed case needs
+            # nothing: a turn that raised was never committed to the checkpoint.
+            if not built.memory.enabled:
+                history.pop()
         else:
             render_tool_activity(tool_slot, new_messages)
-            st.session_state["history"].extend(new_messages)
+            if not built.memory.enabled:
+                history.extend(new_messages)

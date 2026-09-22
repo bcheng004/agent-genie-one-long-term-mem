@@ -21,3 +21,13 @@ resources:
           serving_endpoint:
             name: ${var.llm_endpoint_name}
             permission: CAN_QUERY
+        # Conversation checkpoints and long-term memory. CAN_CONNECT_AND_CREATE
+        # because the app's service principal creates — and therefore owns — the
+        # memory schema on first start. Deploy before running locally, or your own
+        # credentials own that schema and the service principal is locked out.
+        - name: postgres
+          description: "Lakebase project holding checkpoints and long-term memory."
+          postgres:
+            branch: projects/${var.lakebase_project}/branches/${var.lakebase_branch}
+            database: projects/${var.lakebase_project}/branches/${var.lakebase_branch}/databases/databricks-postgres
+            permission: CAN_CONNECT_AND_CREATE

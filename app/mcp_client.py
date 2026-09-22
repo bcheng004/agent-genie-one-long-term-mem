@@ -6,21 +6,20 @@ a thin ``httpx.Auth`` wrapper around ``WorkspaceClient.config.authenticate()``,
 so every MCP request carries freshly-resolved credentials from whatever client
 the app built — the forwarded user token when deployed, the CLI profile locally.
 
-This module also holds the async→sync bridges. MCP tools are coroutine-only, and
-Streamlit is synchronous, so the two need to meet somewhere.
+MCP tools are coroutine-only and Streamlit is synchronous; the two meet on the
+shared event loop in ``async_bridge``.
 """
 
-import asyncio
 import json
 import logging
-import queue
-import threading
-from typing import Any, Awaitable, Callable, Iterator
+from typing import Any
 
 import httpx
 from databricks.sdk import WorkspaceClient
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from mcp.shared._httpx_utils import create_mcp_http_client
+
+from async_bridge import run_coroutine
 
 logger = logging.getLogger(__name__)
 
@@ -221,64 +220,3 @@ def load_genie_tools(workspace_client: WorkspaceClient) -> tuple[list, str]:
         return [], detail or f"{type(exc).__name__}: {exc}"
     logger.info("Loaded %d Genie MCP tool(s): %s", len(tools), [t.name for t in tools])
     return [_wrap_mcp_tool(t) for t in tools], ""
-
-
-# ---------------------------------------------------------------------------
-# async → sync bridges
-# ---------------------------------------------------------------------------
-# Both bridges hand the coroutine to a worker thread that owns its own event
-# loop, rather than reusing the caller's. Streamlit script threads may or may not
-# already have a running loop, and asyncio.run() refuses to nest inside one.
-def run_coroutine(make_coro: Callable[[], Awaitable[Any]]) -> Any:
-    """Run a coroutine to completion from synchronous code."""
-    box: dict[str, Any] = {}
-
-    def worker() -> None:
-        try:
-            box["value"] = asyncio.run(make_coro())
-        except BaseException as exc:  # noqa: BLE001 — re-raised on the calling thread
-            box["error"] = exc
-
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
-    thread.join()
-    if "error" in box:
-        raise box["error"]
-    return box["value"]
-
-
-_DONE = object()
-
-
-def iter_coroutine(make_async_iter: Callable[[], Any]) -> Iterator[Any]:
-    """Consume an async iterator from synchronous code, yielding items as they arrive.
-
-    The Genie MCP tools are coroutine-only, so the agent turn has to run through
-    ``astream``, while ``st.write_stream`` needs a plain iterator. The worker
-    thread pushes each streamed item onto a queue as it lands, which keeps token
-    streaming live rather than buffering the whole turn.
-    """
-    channel: queue.Queue = queue.Queue()
-
-    def worker() -> None:
-        async def pump() -> None:
-            async for item in make_async_iter():
-                channel.put(item)
-
-        try:
-            asyncio.run(pump())
-        except BaseException as exc:  # noqa: BLE001 — re-raised on the calling thread
-            channel.put(exc)
-        finally:
-            channel.put(_DONE)
-
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
-    while True:
-        item = channel.get()
-        if item is _DONE:
-            break
-        if isinstance(item, BaseException):
-            raise item
-        yield item
-    thread.join()

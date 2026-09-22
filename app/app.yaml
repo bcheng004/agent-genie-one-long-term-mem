@@ -7,3 +7,19 @@ env:
   # Databricks serving endpoint backing the agent, reached via the Unity Gateway.
   - name: LLM_ENDPOINT_NAME
     value: "databricks-gpt-6-astra"
+
+  # Lakebase, holding conversation checkpoints and long-term memory. Bare names,
+  # not resource paths — those are only for LAKEBASE_AUTOSCALING_ENDPOINT, which
+  # this app doesn't set. Must match var.lakebase_project / var.lakebase_branch in
+  # databricks.yml, which grant the app access to the same database.
+  - name: LAKEBASE_AUTOSCALING_PROJECT
+    value: "agent-genie-memory"
+  - name: LAKEBASE_AUTOSCALING_BRANCH
+    value: "production"
+  # Created and owned by the app's service principal on first start. Keeping the
+  # agent's tables out of `public` means the grant can stay scoped to them.
+  - name: LAKEBASE_AGENT_MEMORY_SCHEMA
+    value: "agent_memory"
+  # Embeds stored memories so `get_user_memory` can search them by meaning.
+  - name: DATABRICKS_EMBEDDING_ENDPOINT
+    value: "databricks-gte-large-en"
