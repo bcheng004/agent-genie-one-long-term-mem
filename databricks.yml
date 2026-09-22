@@ -1,0 +1,21 @@
+bundle:
+  name: agent-genie-one-long-term-mem
+
+include:
+  - resources/*.yml
+
+variables:
+  llm_endpoint_name:
+    description: "Databricks serving endpoint backing the agent."
+    default: "databricks-gpt-6-astra"
+
+# No workspace host/profile is pinned here on purpose — pass the profile you want
+# at deploy time so the target workspace is always an explicit choice:
+#   databricks bundle deploy -t dev --profile <your-profile>
+targets:
+  dev:
+    default: true
+    mode: development
+
+  prod:
+    mode: production
