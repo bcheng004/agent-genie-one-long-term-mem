@@ -31,3 +31,11 @@ resources:
             branch: projects/${var.lakebase_project}/branches/${var.lakebase_branch}
             database: projects/${var.lakebase_project}/branches/${var.lakebase_branch}/databases/databricks-postgres
             permission: CAN_CONNECT_AND_CREATE
+        # Grants the app's service principal CAN_USE on the warehouse that backs
+        # UC-stored MLflow traces. The id is read from MLFLOW_TRACING_SQL_WAREHOUSE_ID
+        # in app/app.yaml; keep it in sync with var.trace_warehouse_id.
+        - name: sql-warehouse
+          description: "Warehouse backing Unity Catalog MLflow trace storage."
+          sql_warehouse:
+            id: ${var.trace_warehouse_id}
+            permission: CAN_USE

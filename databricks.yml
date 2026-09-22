@@ -17,6 +17,11 @@ variables:
   lakebase_branch:
     description: "Branch within the Lakebase project."
     default: "production"
+  # SQL warehouse backing UC-stored MLflow traces. The app reads the same id from
+  # MLFLOW_TRACING_SQL_WAREHOUSE_ID in app/app.yaml, so change both together.
+  trace_warehouse_id:
+    description: "SQL warehouse id for Unity Catalog MLflow trace storage."
+    default: "9bbc027402111984"
 
 # No workspace host/profile is pinned here on purpose — pass the profile you want
 # at deploy time so the target workspace is always an explicit choice:

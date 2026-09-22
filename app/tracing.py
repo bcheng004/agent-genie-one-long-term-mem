@@ -59,18 +59,57 @@ def init_tracing() -> Tracing:
         import mlflow
 
         mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "databricks"))
-        # Creates the experiment on first run if it isn't there yet.
-        mlflow.set_experiment(name)
+        # Creates the experiment on first run if it isn't there yet. A UC trace
+        # location, when configured, stores spans in Delta tables instead of
+        # workspace-artifact storage (see _uc_trace_location for why that matters).
+        trace_location = _uc_trace_location()
+        if trace_location is not None:
+            mlflow.set_experiment(name, trace_location=trace_location)
+        else:
+            mlflow.set_experiment(name)
         # Traces every LangGraph / LangChain invocation, tool calls included.
         mlflow.langchain.autolog()
         _result = Tracing(experiment=name, error="")
-        logger.info("MLflow tracing enabled on experiment %s", name)
+        logger.info(
+            "MLflow tracing enabled on experiment %s (%s span storage)",
+            name,
+            "Unity Catalog" if trace_location is not None else "workspace",
+        )
     except Exception as exc:  # noqa: BLE001 — surfaced in the sidebar
         logger.warning(
             "MLflow tracing unavailable; continuing without it.", exc_info=True
         )
         _result = Tracing(experiment="", error=f"{type(exc).__name__}: {exc}")
     return _result
+
+
+def _uc_trace_location():
+    """A Unity Catalog trace location from the environment, or ``None``.
+
+    The default (workspace-backed) trace store uploads each trace's spans as a
+    ``traces.json`` artifact to a cloud-storage host. The Databricks Apps runtime
+    here can't reach that host — the upload is refused and the trace lands with
+    an empty span tree, so tool and model spans never appear. Storing spans in
+    Unity Catalog Delta tables, reached through a SQL warehouse, sidesteps that
+    host. When the catalog, schema and warehouse are all configured we bind the
+    experiment to a UC location; otherwise we fall back to the default store.
+
+    ``MLFLOW_TRACING_SQL_WAREHOUSE_ID`` is read by MLflow itself; it's checked
+    here only as the signal that UC storage is intended and usable.
+    """
+    catalog = os.environ.get("MLFLOW_TRACES_CATALOG", "").strip()
+    schema = os.environ.get("MLFLOW_TRACES_SCHEMA", "").strip()
+    warehouse = os.environ.get("MLFLOW_TRACING_SQL_WAREHOUSE_ID", "").strip()
+    if not (catalog and schema and warehouse):
+        return None
+
+    from mlflow.entities.trace_location import UnityCatalog
+
+    kwargs = {"catalog_name": catalog, "schema_name": schema}
+    prefix = os.environ.get("MLFLOW_TRACES_TABLE_PREFIX", "").strip()
+    if prefix:
+        kwargs["table_prefix"] = prefix
+    return UnityCatalog(**kwargs)
 
 
 def turn_metadata(session_id: str | None, user_id: str | None) -> dict:
