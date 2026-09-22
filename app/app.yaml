@@ -23,3 +23,11 @@ env:
   # Embeds stored memories so `get_user_memory` can search them by meaning.
   - name: DATABRICKS_EMBEDDING_ENDPOINT
     value: "databricks-gte-large-en"
+
+  # MLflow tracing. The experiment is created on first run if it doesn't exist;
+  # each turn logs a trace tree (model call, Genie tools, memory tools) under it.
+  # Leave MLFLOW_EXPERIMENT_NAME blank to turn tracing off — the chat still runs.
+  - name: MLFLOW_EXPERIMENT_NAME
+    value: "/Shared/agent-genie-one-long-term-mem"
+  - name: MLFLOW_TRACKING_URI
+    value: "databricks"

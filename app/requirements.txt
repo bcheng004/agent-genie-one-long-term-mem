@@ -9,6 +9,11 @@ databricks-langchain[memory]>=0.19.0
 databricks-sdk>=0.79.0
 langgraph>=1.1.0
 langchain>=1.0.0
+# Tracing. The [databricks] extra carries what `mlflow.set_tracking_uri("databricks")`
+# needs to log traces to a workspace experiment; `mlflow.langchain.autolog()` then
+# traces every LangGraph turn. databricks-langchain already pulls mlflow-skinny, but
+# that lacks the tracking client, so require the full package explicitly.
+mlflow[databricks]>=3.1
 # Genie One MCP tools over streamable HTTP, authenticated per-request by an
 # httpx.Auth wrapper around the WorkspaceClient.
 langchain-mcp-adapters>=0.3.0

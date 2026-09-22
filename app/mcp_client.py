@@ -19,6 +19,7 @@ from databricks.sdk import WorkspaceClient
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from mcp.shared._httpx_utils import create_mcp_http_client
 
+import tracing as trc
 from async_bridge import run_coroutine
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,7 @@ def _wrap_mcp_tool(tool: Any) -> Any:
     schema = tool.args_schema if isinstance(tool.args_schema, dict) else {}
     required = set(schema.get("required") or ())
 
+    name = tool.name
     original = tool.coroutine
     if original is not None:
 
@@ -163,12 +165,22 @@ def _wrap_mcp_tool(tool: Any) -> Any:
                 for key, value in kwargs.items()
                 if key in required or value not in ("", None)
             }
-            result = await original(**cleaned)
-            # response_format="content_and_artifact" -> (content, artifact)
-            if isinstance(result, tuple) and len(result) == 2:
-                content, artifact = result
-                return _flatten_content(content), artifact
-            return _flatten_content(result)
+            # The span carries what autolog's own tool span drops — the cleaned
+            # args actually sent to Genie and, for content_and_artifact tools,
+            # the artifact (SQL, query_id, rows). A raised call still propagates
+            # through here so the span records the error and the tool's own
+            # handle_tool_error runs.
+            with trc.tool_span(name, cleaned) as record:
+                result = await original(**cleaned)
+                # response_format="content_and_artifact" -> (content, artifact)
+                if isinstance(result, tuple) and len(result) == 2:
+                    content, artifact = result
+                    content = _flatten_content(content)
+                    record(content, artifact)
+                    return content, artifact
+                content = _flatten_content(result)
+                record(content)
+                return content
 
         tool.coroutine = wrapped
 

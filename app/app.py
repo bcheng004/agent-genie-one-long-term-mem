@@ -22,6 +22,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Too
 from langchain_core.tools import tool
 
 import memory as mem
+import tracing as trc
 from async_bridge import iter_coroutine
 from mcp_client import genie_mcp_url, load_genie_tools
 
@@ -140,6 +141,7 @@ class Built(NamedTuple):
     mcp_url: str
     genie_error: str
     memory: mem.Memory
+    tracing: trc.Tracing
     user_id: str
 
 
@@ -176,6 +178,10 @@ def build_agent(token: str | None, host: str, endpoint: str) -> Built:
         mem.memory_tools(memory.store, user_id) if memory.enabled else []
     )
 
+    # Enable MLflow autolog before the agent runs, so every turn is traced. This
+    # is process-global and best-effort; a tracing problem never blocks chat.
+    tracing = trc.init_tracing()
+
     agent = create_agent(
         model=model,
         tools=[*LOCAL_TOOLS, *genie_tools, *memory_tools],
@@ -189,6 +195,7 @@ def build_agent(token: str | None, host: str, endpoint: str) -> Built:
         mcp_url=genie_mcp_url(workspace_client),
         genie_error=genie_error,
         memory=memory,
+        tracing=tracing,
         user_id=user_id,
     )
 
@@ -329,6 +336,11 @@ with st.sidebar:
             if built.memory.error:
                 st.caption(f"Lakebase said: {built.memory.error}")
 
+        if built.tracing.enabled:
+            st.caption(f"MLflow tracing: `{built.tracing.experiment}`")
+        elif built.tracing.error:
+            st.caption(f"MLflow tracing off — {built.tracing.error}")
+
     if st.button("New conversation", width="stretch"):
         # With a checkpointer the transcript lives in Postgres, so starting over
         # means pointing at a new thread rather than clearing a local list. The
@@ -356,6 +368,12 @@ if built.memory.enabled:
 else:
     run_config = {}
     history = st.session_state.setdefault("history", [])
+
+# Read on the script thread and closed over below: the traced span runs on the
+# shared event loop, which has no Streamlit ScriptRunContext, so it can't touch
+# st.session_state itself. The thread id doubles as the trace session id, so a
+# whole conversation's turns group together in the MLflow UI.
+session_id = st.session_state.get("thread_id")
 
 # Replay the transcript. It holds real LangChain messages, so a rerun re-renders
 # without calling the model again.
@@ -423,13 +441,56 @@ if question := st.chat_input("Ask the agent…"):
             # ScriptRunContext, and touching st.session_state there raises
             # "st.session_state has no key".
             payload_messages = [asked] if built.memory.enabled else list(history)
-            events = iter_coroutine(
-                lambda: agent.astream(
-                    {"messages": payload_messages},
-                    config=run_config,
-                    stream_mode=["updates", "messages"],
-                )
-            )
+
+            async def astream():
+                """Drive the agent, wrapped in one MLflow trace per turn.
+
+                autolog already traces the run; the enclosing ``chat_turn`` span
+                exists to hang the whole turn under a single named root, stamp it
+                with the session and user (so a conversation groups in the UI),
+                and — crucially — carry the final answer as the trace's output.
+                MLflow shows a trace's response from its root span, so without
+                set_outputs here the trace reads as having produced nothing even
+                though the answer is nested in the model span. The answer is
+                rebuilt from the ``updates`` messages via ``text_of`` rather than
+                the token deltas, so it isn't the Responses API's doubled text.
+
+                Both this span and the autolog spans it parents run here on the
+                shared loop, so trace context propagates cleanly — opening the
+                span on the Streamlit thread would not reach them.
+                """
+                graph_input = {"messages": payload_messages}
+                kwargs = dict(config=run_config, stream_mode=["updates", "messages"])
+                if not built.tracing.enabled:
+                    async for item in agent.astream(graph_input, **kwargs):
+                        yield item
+                    return
+
+                import mlflow
+
+                with mlflow.start_span(name="chat_turn") as span:
+                    span.set_inputs({"question": question})
+                    metadata = trc.turn_metadata(session_id, built.user_id)
+                    if metadata:
+                        mlflow.update_current_trace(metadata=metadata)
+                    answered: list = []
+                    async for item in agent.astream(graph_input, **kwargs):
+                        mode, payload = item
+                        if mode == "updates":
+                            for node_update in (payload or {}).values():
+                                answered.extend((node_update or {}).get("messages", []))
+                        yield item
+                    span.set_outputs(
+                        {
+                            "response": "".join(
+                                text_of(m.content)
+                                for m in answered
+                                if isinstance(m, AIMessage)
+                            )
+                        }
+                    )
+
+            events = iter_coroutine(astream)
             for mode, payload in events:
                 if mode == "messages":
                     chunk, _meta = payload
