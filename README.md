@@ -10,6 +10,8 @@ signed-in user, so Genie answers from the data that person can see. Durable fact
 the user shares are saved to **long-term memory** and recalled in later
 conversations. Every turn is **traced to MLflow**.
 
+![The Agent Chat app answering "What team did I say I'm on?" by recalling a fact from long-term memory; the sidebar shows the Genie One MCP tools, Lakebase memory, and the MLflow experiment](https://raw.githubusercontent.com/bcheng004/agent-genie-one-long-term-mem/main/imgs/apps-lakebase-memory.png)
+
 ## What's in it
 
 - **Agent** — `langchain.agents.create_agent` talking to a Databricks-hosted model
@@ -25,6 +27,18 @@ conversations. Every turn is **traced to MLflow**.
 
 Memory and tracing are best-effort: if their config is absent the chat still runs
 without them, and the sidebar shows the status of each.
+
+**Genie One** — natural-language access to your data, with built-in connectors:
+
+![The Genie One home screen with connectors for Google Drive, Gmail, Atlassian, Glean, GitHub, Microsoft 365 and Slack](https://raw.githubusercontent.com/bcheng004/agent-genie-one-long-term-mem/main/imgs/genie-one.png)
+
+**A data question answered through Genie One over MCP**, with the tool calls expanded:
+
+![The app answering a data question by calling genie_ask and polling for the result](https://raw.githubusercontent.com/bcheng004/agent-genie-one-long-term-mem/main/imgs/apps-genie-one-mcp.png)
+
+**Each turn traced to MLflow** — the `chat_turn` span with the model call, memory tool, and Genie tool calls nested underneath, stored in Unity Catalog:
+
+![An MLflow trace showing the chat_turn span tree with model, save_user_memory, genie_ask and genie_poll_response spans](https://raw.githubusercontent.com/bcheng004/agent-genie-one-long-term-mem/main/imgs/app-mlflow-traces.png)
 
 ## Layout
 
