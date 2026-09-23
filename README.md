@@ -10,8 +10,6 @@ signed-in user, so Genie answers from the data that person can see. Durable fact
 the user shares are saved to **long-term memory** and recalled in later
 conversations. Every turn is **traced to MLflow**.
 
-![The Agent Chat app answering "What team did I say I'm on?" by recalling a fact from long-term memory; the sidebar shows the Genie One MCP tools, Lakebase memory, and the MLflow experiment](https://raw.githubusercontent.com/bcheng004/agent-genie-one-long-term-mem/main/imgs/apps-lakebase-memory.png)
-
 ## What's in it
 
 - **Agent** — `langchain.agents.create_agent` talking to a Databricks-hosted model
@@ -35,6 +33,10 @@ without them, and the sidebar shows the status of each.
 **A data question answered through Genie One over MCP**, with the tool calls expanded:
 
 ![The app answering a data question by calling genie_ask and polling for the result](https://raw.githubusercontent.com/bcheng004/agent-genie-one-long-term-mem/main/imgs/apps-genie-one-mcp.png)
+
+**Long-term memory recalled in a later conversation** — the app answers "What team did I say I'm on?" from what it saved earlier; the sidebar shows the Genie One MCP tools, Lakebase memory, and the MLflow experiment:
+
+![The Agent Chat app answering "What team did I say I'm on?" by recalling a fact from long-term memory; the sidebar shows the Genie One MCP tools, Lakebase memory, and the MLflow experiment](https://raw.githubusercontent.com/bcheng004/agent-genie-one-long-term-mem/main/imgs/apps-lakebase-memory.png)
 
 **Each turn traced to MLflow** — the `chat_turn` span with the model call, memory tool, and Genie tool calls nested underneath, stored in Unity Catalog:
 
