@@ -7,3 +7,44 @@ env:
   # Databricks serving endpoint backing the agent, reached via the Unity Gateway.
   - name: LLM_ENDPOINT_NAME
     value: "databricks-gpt-6-astra"
+
+  # Lakebase, holding conversation checkpoints and long-term memory. Bare names,
+  # not resource paths — those are only for LAKEBASE_AUTOSCALING_ENDPOINT, which
+  # this app doesn't set. Must match var.lakebase_project / var.lakebase_branch in
+  # databricks.yml, which grant the app access to the same database.
+  - name: LAKEBASE_AUTOSCALING_PROJECT
+    value: "agent-genie-memory"
+  - name: LAKEBASE_AUTOSCALING_BRANCH
+    value: "production"
+  # Created and owned by the app's service principal on first start. Keeping the
+  # agent's tables out of `public` means the grant can stay scoped to them.
+  - name: LAKEBASE_AGENT_MEMORY_SCHEMA
+    value: "agent_memory"
+  # Embeds stored memories so `get_user_memory` can search them by meaning.
+  - name: DATABRICKS_EMBEDDING_ENDPOINT
+    value: "databricks-gte-large-en"
+
+  # MLflow tracing. The experiment is created on first run if it doesn't exist;
+  # each turn logs a trace tree (model call, Genie tools, memory tools) under it.
+  # Leave MLFLOW_EXPERIMENT_NAME blank to turn tracing off — the chat still runs.
+  # A fresh experiment: a UC trace location can only be linked to one that holds
+  # no traces yet, and the original already accumulated span-less traces from when
+  # uploads to workspace storage were failing.
+  - name: MLFLOW_EXPERIMENT_NAME
+    value: "/Shared/agent-genie-one-long-term-mem-traces"
+  - name: MLFLOW_TRACKING_URI
+    value: "databricks"
+  # Span storage. The Apps runtime here can't reach the cloud-storage host the
+  # default trace store uploads spans to, so spans go to Unity Catalog Delta
+  # tables via the SQL warehouse instead. The app's service principal is granted
+  # USE CATALOG + full privileges on the schema and CAN_USE on the warehouse
+  # (the sql-warehouse app resource). Clear these three to fall back to the
+  # default store. The warehouse id must match var.trace_warehouse_id.
+  - name: MLFLOW_TRACES_CATALOG
+    value: "workshop_guy_catalog"
+  - name: MLFLOW_TRACES_SCHEMA
+    value: "agent_genie_traces"
+  - name: MLFLOW_TRACES_TABLE_PREFIX
+    value: "agent_chat"
+  - name: MLFLOW_TRACING_SQL_WAREHOUSE_ID
+    value: "9bbc027402111984"

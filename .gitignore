@@ -19,3 +19,7 @@ env/
 
 # Logs
 *.log
+
+# Local MLflow tracking store (created when tracing runs against a local URI)
+mlflow.db
+mlruns/
