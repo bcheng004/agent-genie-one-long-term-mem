@@ -117,17 +117,39 @@ def _workspace_client(token: str | None, host: str) -> WorkspaceClient:
     return WorkspaceClient()
 
 
-def _user_id(workspace_client: WorkspaceClient) -> str:
-    """Who the memories belong to.
+def _user_id(workspace_client: WorkspaceClient) -> str | None:
+    """Who the memories belong to — their email, or ``None`` if it can't be known.
 
     The email is the stable key: it survives token rotation, and locally it
     matches the profile's own user so a developer sees the memories they wrote.
+
+    The SDK call is primary because it's what the memories already on disk were
+    keyed by. When it fails — a blipping on-behalf-of-user token 401s
+    ``current_user.me()`` — fall back to the identity header Databricks Apps
+    forwards: it comes from the verified session and makes no API call, so it
+    can't 401 the way the SDK call just did. Returning ``None`` rather than a
+    literal ``"unknown"`` is deliberate: the caller then runs *without* memory for
+    the session instead of pooling every unidentified visitor under one shared
+    key, which used to both hide the real user's memories and mix strangers
+    together.
     """
     try:
-        return workspace_client.current_user.me().user_name or "unknown"
-    except Exception:  # noqa: BLE001 — a shared bucket beats crashing
-        logger.warning("Could not resolve the current user.", exc_info=True)
-        return "unknown"
+        if name := workspace_client.current_user.me().user_name:
+            return name
+    except Exception:  # noqa: BLE001 — fall back to the forwarded header
+        logger.warning(
+            "current_user.me() failed; trying the forwarded identity header.",
+            exc_info=True,
+        )
+
+    try:
+        headers = st.context.headers or {}
+    except Exception:  # noqa: BLE001 — no request context (e.g. local)
+        headers = {}
+    for header in ("X-Forwarded-Email", "X-Forwarded-Preferred-Username"):
+        if email := headers.get(header):
+            return email
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +164,7 @@ class Built(NamedTuple):
     genie_error: str
     memory: mem.Memory
     tracing: trc.Tracing
-    user_id: str
+    user_id: str | None
 
 
 @st.cache_resource(show_spinner=False)
@@ -174,6 +196,10 @@ def build_agent(token: str | None, host: str, endpoint: str) -> Built:
     # memories are the app's storage, partitioned by user.
     memory = mem.open_memory(mem.init_lakebase_config())
     user_id = _user_id(workspace_client)
+    if memory.enabled and not user_id:
+        # No stable identity to key memories on — run without memory rather than
+        # pool it under a shared bucket. A mislabeled memory is worse than none.
+        memory = mem.Memory(None, None, "Couldn't identify the signed-in user.")
     memory_tools = (
         mem.memory_tools(memory.store, user_id) if memory.enabled else []
     )
